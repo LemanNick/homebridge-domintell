@@ -1,0 +1,39 @@
+{
+  "name": "homebridge-plugin-domintell",
+  "version": "1.0.0",
+  "description": "Domintell connection to Homebridge",
+  "main": "dist/dynamic-platform.js",
+  "scripts": {
+    "clean": "rimraf ./dist",
+    "build": "rimraf ./dist && tsc",
+    "prepublishOnly": "npm run build",
+    "postpublish": "npm run clean",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Leman Nick <nick.leman@gmail.com>",
+  "engines": {
+    "homebridge": ">=1.0.0"
+  },
+  "license": "ISC",
+  "files": [
+    "LICENSE",
+    "dist"
+  ],
+  "keywords": [
+    "homebridge-plugin"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LemanNick/homebridge-domintell.git"
+  },
+  "bugs": {
+    "url": "https://github.com/LemanNick/homebridge-domintell/issues"
+  },
+  "devDependencies": {
+    "@types/node": "10.17.19",
+    "typescript": "^3.8.3",
+    "rimraf": "^3.0.2",
+    "homebridge": "^1.0.4",
+    "ws": "^7.4.7"
+  }
+}
