@@ -30,10 +30,11 @@
     "url": "https://github.com/LemanNick/homebridge-domintell/issues"
   },
   "devDependencies": {
-    "@types/node": "10.17.19",
-    "typescript": "^3.8.3",
-    "rimraf": "^3.0.2",
+    "@types/node": "^10.17.19",
+    "@types/ws": "^7.4.7",
     "homebridge": "^1.0.4",
+    "rimraf": "^3.0.2",
+    "typescript": "^3.8.3",
     "ws": "^7.4.7"
   }
 }
