@@ -4,6 +4,7 @@ import {
   APIEvent,
   CharacteristicEventTypes,
   CharacteristicSetCallback,
+  CharacteristicGetCallback,
   CharacteristicValue,
   DynamicPlatformPlugin,
   HAP,
@@ -13,6 +14,9 @@ import {
   PlatformConfig,
 } from "homebridge";
 import WebSocket from 'ws';
+import { setServers } from "dns";
+import { callbackify } from "util";
+import { access } from "fs";
 
 const PLUGIN_NAME = "homebridge-plugin-domintell";
 const PLATFORM_NAME = "HomebridgeDomintell";
@@ -68,6 +72,7 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
 
   private readonly log: Logging;
   private readonly api: API;
+  private positionPollInterval: number;
 
   private requestServer?: Server;
 
@@ -78,12 +83,15 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
     this.api = api;
     platform = this;
 
+    this.positionPollInterval = 1000;
+
     if (config.ip) {
       ip = config.ip;
     }
     else {
       log.error("No IP address specified in config..."); 
-      // probly stop loading plugin any further as we do not know where to connect to
+      return;
+      // TODO: probly stop loading plugin any further as we do not know where to connect to
     }
     port = config.port || 17481;
 
@@ -94,8 +102,6 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
      * This event can also be used to start discovery of new accessories.
      */
     api.on(APIEvent.DID_FINISH_LAUNCHING, () => {
- //     log.info("Example platform 'didFinishLaunching'");
-
       this.setupWebSocket();
 
       // Parse config file, and add accessories
@@ -183,6 +189,61 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
         }
         callback();
       });
+    } else if (accessory.context.type == AccessoryType.WindowCovering ) {
+      accessory.getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.CurrentPosition)
+      .on(CharacteristicEventTypes.GET, (callback: CharacteristicGetCallback) => {
+        if (accessory.context.currentPosition == undefined)
+          accessory.context.currentPosition = 100
+        this.log.info("WindowCovering GetCurrentPosition returning: %i",accessory.context.currentPosition)
+        return callback(null,accessory.context.currentPosition);
+      });
+
+      accessory.getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.PositionState)
+      .on(CharacteristicEventTypes.GET, (callback: CharacteristicGetCallback) => {
+        this.log.info("WindowCovering GetPositionState")
+        if (accessory.context.positionState == undefined)
+          accessory.context.positionState = 0
+        return callback(null,accessory.context.positionState);
+      });
+
+      accessory.getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.TargetPosition)
+      .on(CharacteristicEventTypes.SET, (value: CharacteristicValue, callback: CharacteristicSetCallback) => {
+        let targetDuration: number = Math.abs(parseInt(value.toString()) - accessory.context.currentPosition);
+        clearTimeout( accessory.context.setInterval);
+        
+        this.log.info ("movementDuration should be %i", accessory.context.movementDuration);
+
+        if (accessory.context.currentPosition > value) {
+          // move down
+          this.log.info("WindowCovering SetTargetPosition: '%i' moving down for %i milliseconds",value, accessory.context.movementDuration/100*targetDuration);
+          accessory.context.positionState = hap.Characteristic.PositionState.DECREASING;
+          ws.send(accessory.context.myData + '%L');
+        } else if (accessory.context.currentPosition < value) {
+          // move up
+          this.log.info("WindowCovering SetTargetPosition: '%i' moving up for %i milliseconds",value, accessory.context.movementDuration/100*targetDuration);
+          accessory.context.positionState = hap.Characteristic.PositionState.INCREASING;
+          ws.send(accessory.context.myData + '%H');
+        } else {
+          accessory.context.positionState = hap.Characteristic.PositionState.STOPPED;
+        }
+
+        accessory.context.setInterval = setTimeout( function(){ 
+          accessory.context.currentPosition = value;
+          platform.log.info("WindowCovering SetTargetPosition: stopping")
+          accessory.getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.CurrentPosition).updateValue(accessory.context.currentPosition);
+          accessory.getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.PositionState).updateValue(hap.Characteristic.PositionState.STOPPED);
+          ws.send(accessory.context.myData + '%O')
+
+
+        }, accessory.context.movementDuration/100*targetDuration);
+        
+        callback();
+      });
+      /*accessory.getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.TargetPosition)
+      .on(CharacteristicEventTypes.GET, (callback: CharacteristicGetCallback) => {
+        this.log.info("WindowCovering GetTargetPosition")
+        return callback(null,57);
+      });*/
     } else if (accessory.context.type == AccessoryType.TemperatureSensor ) {
       //set Celcius as temperature unit
       accessory.getService(hap.Service.TemperatureSensor)!.updateCharacteristic(hap.Characteristic.TemperatureDisplayUnits, 0);
@@ -191,7 +252,7 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
     this.accessories.push(accessory);
   }
 
-  setupWebSocket(){
+   setupWebSocket(){
     platform.log.info("Opening a new connection to Domintell '%s' on port %i",ip,port)
 
     connectionTimeout = 0;
@@ -280,11 +341,19 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
 
           } else if  (splitmsg[i].startsWith("VAR")) {
             // Parse Software Vars
-          } else if  (splitmsg[i].startsWith("TRV  25DEO")) {
+          } else if  (splitmsg[i].startsWith("TRV")) {
             // Parse DTRV01 4 shutter inverters
             //Bit 0 Relay 1 = UP
             //Bit 1 Relay 1 = DOWN ...
-            platform.log.info("Received: '%s' (unhandled)", splitmsg[i]);
+            //platform.log.info("Received: '%s' (unhandled)", splitmsg[i]);
+
+            const uid = splitmsg[i].substr(0,9).toString();
+            const value = parseInt(splitmsg[i].substr(10,2), 16);
+
+            for (let k = 0; k < 4 ; k++) {
+              //platform.log.info("TRV update '%s' to '%i'",uid+"-"+((k*2)+1), (value & (3 << (k*2))) >> (k*2));
+              platform.updateAccessory(hap.uuid.generate(uid+"-"+((k*2)+1)),(value & (3 << (k*2))) >> (k*2))
+            }
 
           } else if  (splitmsg[i].startsWith("SYS")) {
             // Parse System parameters
@@ -317,6 +386,10 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
       if (this.accessories[i].UUID === uuid) {
         // The requested accessory already exists, skipping
         existingAccessory = true;
+        if (confobject.type == "WindowCovering")
+          this.accessories[i].context.movementDuration = confobject.movementDuration;
+
+
       } 
     }
 
@@ -325,33 +398,33 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
       const accessory = new Accessory(confobject.name, uuid);
 
       if (confobject.type == "Lightbulb"){
-        accessory.context.type = AccessoryType.Lightbulb
-        accessory.addService(hap.Service.Lightbulb, confobject.name)
+        accessory.context.type = AccessoryType.Lightbulb;
+        accessory.addService(hap.Service.Lightbulb, confobject.name);
       }
       if (confobject.type == "DimmableLightbulb"){
-        accessory.context.type = AccessoryType.Lightbulb
-        accessory.addService(hap.Service.Lightbulb, confobject.name)
+        accessory.context.type = AccessoryType.Lightbulb;
+        accessory.addService(hap.Service.Lightbulb, confobject.name);
       }
       if (confobject.type == "Outlet"){
-        accessory.context.type = AccessoryType.Outlet
-        accessory.addService(hap.Service.Outlet, confobject.name)
+        accessory.context.type = AccessoryType.Outlet;
+        accessory.addService(hap.Service.Outlet, confobject.name);
       }
       if (confobject.type == "WindowCovering"){
-        accessory.context.type = AccessoryType.WindowCovering
-        accessory.context.riseTime = confobject.riseTime
-        accessory.addService(hap.Service.WindowCovering, confobject.name)
+        accessory.context.type = AccessoryType.WindowCovering;
+        accessory.context.movementDuration = confobject.movementDuration;
+        accessory.addService(hap.Service.WindowCovering, confobject.name);
       }
       if (confobject.type == "TemperatureSensor"){
-        accessory.context.type = AccessoryType.TemperatureSensor
-        accessory.addService(hap.Service.TemperatureSensor, confobject.name)
+        accessory.context.type = AccessoryType.TemperatureSensor;
+        accessory.addService(hap.Service.TemperatureSensor, confobject.name);
       }
       if (confobject.type == "ContactSensor"){
-        accessory.context.type = AccessoryType.ContactSensor
-        accessory.addService(hap.Service.ContactSensor, confobject.name)
+        accessory.context.type = AccessoryType.ContactSensor;
+        accessory.addService(hap.Service.ContactSensor, confobject.name);
       }
       if (confobject.type == "MotionSensor"){
-        accessory.context.type = AccessoryType.MotionSensor
-        accessory.addService(hap.Service.MotionSensor, confobject.name)
+        accessory.context.type = AccessoryType.MotionSensor;
+        accessory.addService(hap.Service.MotionSensor, confobject.name);
       }
 
       accessory.context.myData = confobject.identifier;
@@ -363,54 +436,6 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
     }
 
   }
-/*
-  addAccessory(uid:string, name: string, accessorytype: AccessoryType) {
-    let existingAccessory = false;
-
-    // generate uuid from Domintell identifier
-    const uuid = hap.uuid.generate(uid);
-
-    for (var i = 0; i < this.accessories.length; i++) {
-      if (this.accessories[i].UUID === uuid) {
-        // The requested accessory already exists, skipping
-        existingAccessory = true;
-      } 
-    }
-
-    if (!existingAccessory) {
-      this.log.info("Adding new accessory with name '%s'", name);
-      const accessory = new Accessory(name, uuid);
-
-      accessory.context.type = accessorytype;
-
-      if (accessorytype == AccessoryType.Lightbulb) {
-        accessory.addService(hap.Service.Lightbulb, name)
-      }
-      else if (accessorytype == AccessoryType.DimmableLightbulb) {
-         accessory.addService(hap.Service.Lightbulb, name)
-      }
-      else if (accessorytype == AccessoryType.Outlet) {
-        accessory.addService(hap.Service.Outlet, name)
-      }
-      else if (accessorytype == AccessoryType.TemperatureSensor) {
-        accessory.addService(hap.Service.TemperatureSensor, name)
-      } 
-      else if (accessorytype == AccessoryType.MotionSensor) {
-        accessory.addService(hap.Service.MotionSensor, name)
-      } 
-      else if (accessorytype == AccessoryType.ContactSensor) {
-        accessory.addService(hap.Service.ContactSensor, name)
-      } 
-       
-      accessory.context.myData = uid;
-
-
-      this.configureAccessory(accessory); // abusing the configureAccessory here
-
-      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-    }
-  }
-*/
 
   /* Received external information about something, update the status in HomeBridge accordingly */
   updateAccessory(uuid: string, value: number) {
@@ -431,6 +456,41 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
           } else {
             this.accessories[i].getService(hap.Service.Lightbulb)!.updateCharacteristic(hap.Characteristic.On, true);
           }
+        }
+        if (this.accessories[i].context.type == AccessoryType.WindowCovering ){
+/*
+          this.log.info("TRV update received to value='%i' currentPostition='%i' positionState='%i' stamp='%i' now='%i' ", value, this.accessories[i].context.currentPosition,this.accessories[i].context.positionState, this.accessories[i].context.startMovementTimeStamp, new Date().getTime())
+
+          if (this.accessories[i].context.positionState == hap.Characteristic.PositionState.INCREASING) {
+            this.log.info("TRV was opening with currentPosition '%i' and will be updated to '%i' (%i ms)", this.accessories[i].context.currentPosition, this.accessories[i].context.currentPosition +  ((new Date().getTime() - this.accessories[i].context.startMovementTimeStamp)/this.accessories[i].context.movementDuration)*100, new Date().getTime() - this.accessories[i].context.startMovementTimeStamp)
+            this.accessories[i].context.currentPosition = this.accessories[i].context.currentPosition +  ((new Date().getTime() - this.accessories[i].context.startMovementTimeStamp)/this.accessories[i].context.movementDuration)*100
+          } else if (this.accessories[i].context.positionState == hap.Characteristic.PositionState.DECREASING) {
+            this.log.info("TRV was closing with currentPosition '%i' and will be updated to '%i' (%i ms)", this.accessories[i].context.currentPosition, this.accessories[i].context.currentPosition -  ((new Date().getTime() - this.accessories[i].context.startMovementTimeStamp)/this.accessories[i].context.movementDuration)*100, new Date().getTime() - this.accessories[i].context.startMovementTimeStamp)
+            this.accessories[i].context.currentPosition = this.accessories[i].context.currentPosition -  ((new Date().getTime() - this.accessories[i].context.startMovementTimeStamp)/this.accessories[i].context.movementDuration)*100
+          } else if (this.accessories[i].context.positionState == hap.Characteristic.PositionState.STOPPED) {
+            this.log.info("TRV was closing with currentPosition='%i' targetPosition='%i'", this.accessories[i].context.currentPosition, this.accessories[i].getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.TargetPosition).getValue())
+          }
+
+
+          this.accessories[i].context.startMovementTimeStamp = new Date().getTime();
+          
+          this.accessories[i].context.currentPosition = Math.min(this.accessories[i].context.currentPosition, 100)
+          this.accessories[i].context.currentPosition = Math.max(this.accessories[i].context.currentPosition, 0)
+*/
+          switch (value) {
+            case 0: 
+              this.accessories[i].context.positionState = hap.Characteristic.PositionState.STOPPED
+              this.accessories[i].getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.TargetPosition).updateValue(this.accessories[i].context.currentPosition)
+              break;
+            case 1: 
+              this.accessories[i].context.positionState = hap.Characteristic.PositionState.INCREASING
+              break;
+            case 2: 
+              this.accessories[i].context.positionState = hap.Characteristic.PositionState.DECREASING
+              break;
+          }
+          this.accessories[i].getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.PositionState).updateValue(this.accessories[i].context.positionState)
+          //this.accessories[i].getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.CurrentPosition).updateValue(this.accessories[i].context.currentPosition)
         }
         if (this.accessories[i].context.type == AccessoryType.Outlet ){
           if (value == 0) {
@@ -467,20 +527,13 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
     this.accessories.splice(0, this.accessories.length); // clear out the array
   }
 
-  discoverAccessories() {
-    /* Get APPINFO information from Domintell */
-    ws.send('APPINFO');
-  }
-
   createHttpService() {
     this.requestServer = http.createServer(this.handleRequest.bind(this));
     this.requestServer.listen(18081, () => this.log.info("Http server listening on 18081..."));
   }
 
   private handleRequest(request: IncomingMessage, response: ServerResponse) {
-    if (request.url === "/discover") {
-      this.discoverAccessories();
-    } else if (request.url === "/remove") {
+    if (request.url === "/remove") {
       this.removeAccessories();
     }
 
