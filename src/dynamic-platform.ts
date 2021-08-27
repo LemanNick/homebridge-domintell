@@ -110,21 +110,36 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
           platform.addAccessory(confacc);
         }
       }
+
+      /*
+       * Iterate over configured accessories and remove them if they are not mentioned or configured in the config file
+       */
+      for (var i of this.accessories) {
+        let accessoryFound = false;
+        for (var k of config.accessories) {
+         if (i.UUID == hap.uuid.generate(k.identifier))
+          accessoryFound=true;
+        }
+        if (accessoryFound == false)
+          this.removeAccessory(i)
+      }
       
       // The idea of this plugin is that we open a http service which exposes api calls to add or remove accessories
       this.createHttpService();
     });
 
-    /* Set keepalive status. Send a PING command every 15 seconds, before server closes the connection */
-    const interval = setInterval(function ping() {
-      ws.send('PING');
+    /* 
+     * Set keepalive status. Send a PING command every 15 seconds, this keeps the connection to Domintell open 
+     */
+    const interval = setInterval(function hello() {
+      ws.send('HELLO');
       connectionTimeout+=1;
 
       if (connectionTimeout >= 3) {
         log.info("Connection timeout currently %i", connectionTimeout)
         // TODO: if connectionTimeout equals 3, reesatablish connection
       }
-    }, 15000);
+    }, 50000);
   }
 
   /*
@@ -192,35 +207,64 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
     } else if (accessory.context.type == AccessoryType.WindowCovering ) {
       accessory.getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.CurrentPosition)
       .on(CharacteristicEventTypes.GET, (callback: CharacteristicGetCallback) => {
-        if (accessory.context.currentPosition == undefined)
+        if (accessory.context.currentPosition == undefined) {
           accessory.context.currentPosition = 100
-        this.log.info("WindowCovering GetCurrentPosition returning: %i",accessory.context.currentPosition)
+        }
+        accessory.context.currentPosition = Math.min(accessory.context.currentPosition, 100)
+        accessory.context.currentPosition = Math.max(accessory.context.currentPosition, 0)
+        //this.log.info("WindowCovering GetCurrentPosition returning: %i",accessory.context.currentPosition)
         return callback(null,accessory.context.currentPosition);
       });
 
       accessory.getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.PositionState)
       .on(CharacteristicEventTypes.GET, (callback: CharacteristicGetCallback) => {
-        this.log.info("WindowCovering GetPositionState")
         if (accessory.context.positionState == undefined)
-          accessory.context.positionState = 0
+          accessory.context.positionState = hap.Characteristic.PositionState.STOPPED
+        //this.log.info("WindowCovering GetPositionState returning %i", accessory.context.positionState)
         return callback(null,accessory.context.positionState);
       });
 
+      accessory.getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.PositionState)
+      .on(CharacteristicEventTypes.SET, (value: CharacteristicValue, callback: CharacteristicSetCallback) => {
+        //this.log.info("WindowCovering SetPositionState was called with value '%i' (doc. says we should be called)", value)
+        return callback();
+      });
+
+
       accessory.getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.TargetPosition)
       .on(CharacteristicEventTypes.SET, (value: CharacteristicValue, callback: CharacteristicSetCallback) => {
-        let targetDuration: number = Math.abs(parseInt(value.toString()) - accessory.context.currentPosition);
-        clearTimeout( accessory.context.setInterval);
-        
-        this.log.info ("movementDuration should be %i", accessory.context.movementDuration);
 
+        accessory.context.targetPosition = value;
+
+        clearTimeout( accessory.context.setInterval);
+        accessory.context.setInterval = null;
+
+        // if we were moving when receiving a new target position, we should calculate what our new current possition was, 
+        switch (accessory.context.positionState) {
+          case hap.Characteristic.PositionState.DECREASING:
+            accessory.context.currentPosition -= ((new Date().getTime() - accessory.context.startMovementTimeStamp)/accessory.context.movementDuration)*100
+            accessory.context.startMovementTimeStamp = new Date().getTime();
+            break;
+          case hap.Characteristic.PositionState.INCREASING:
+            accessory.context.currentPosition += ((new Date().getTime() - accessory.context.startMovementTimeStamp)/accessory.context.movementDuration)*100
+            accessory.context.startMovementTimeStamp = new Date().getTime();
+            break;
+          case hap.Characteristic.PositionState.STOPPED:
+            accessory.context.startMovementTimeStamp = new Date().getTime();
+            break;
+        }
+
+        accessory.context.currentPosition = Math.min(accessory.context.currentPosition,100);
+        accessory.context.currentPosition = Math.max(accessory.context.currentPosition,0);
+
+        let targetDuration: number = Math.abs(parseInt(value.toString()) - accessory.context.currentPosition);
+             
         if (accessory.context.currentPosition > value) {
-          // move down
-          this.log.info("WindowCovering SetTargetPosition: '%i' moving down for %i milliseconds",value, accessory.context.movementDuration/100*targetDuration);
+          //this.log.info("WindowCovering SetTargetPosition: '%i' moving down for %i milliseconds",value, accessory.context.movementDuration/100*targetDuration);
           accessory.context.positionState = hap.Characteristic.PositionState.DECREASING;
           ws.send(accessory.context.myData + '%L');
         } else if (accessory.context.currentPosition < value) {
-          // move up
-          this.log.info("WindowCovering SetTargetPosition: '%i' moving up for %i milliseconds",value, accessory.context.movementDuration/100*targetDuration);
+          //this.log.info("WindowCovering SetTargetPosition: '%i' moving up for %i milliseconds",value, accessory.context.movementDuration/100*targetDuration);
           accessory.context.positionState = hap.Characteristic.PositionState.INCREASING;
           ws.send(accessory.context.myData + '%H');
         } else {
@@ -229,21 +273,30 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
 
         accessory.context.setInterval = setTimeout( function(){ 
           accessory.context.currentPosition = value;
-          platform.log.info("WindowCovering SetTargetPosition: stopping")
           accessory.getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.CurrentPosition).updateValue(accessory.context.currentPosition);
-          accessory.getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.PositionState).updateValue(hap.Characteristic.PositionState.STOPPED);
-          ws.send(accessory.context.myData + '%O')
 
+          accessory.context.positionState = hap.Characteristic.PositionState.STOPPED;
+          accessory.getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.PositionState).updateValue(accessory.context.positionState);
+          
+          ws.send(accessory.context.myData + '%O');
+
+          accessory.context.setInterval = null;
 
         }, accessory.context.movementDuration/100*targetDuration);
         
         callback();
       });
-      /*accessory.getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.TargetPosition)
+
+      accessory.getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.TargetPosition)
       .on(CharacteristicEventTypes.GET, (callback: CharacteristicGetCallback) => {
-        this.log.info("WindowCovering GetTargetPosition")
-        return callback(null,57);
-      });*/
+        if (accessory.context.targetPosition == undefined) {
+          accessory.context.targetPosition = 100;
+        }
+        accessory.context.targetPosition = Math.min(accessory.context.targetPosition, 100)
+        accessory.context.targetPosition = Math.max(accessory.context.targetPosition, 0)
+        return callback(null,accessory.context.targetPosition);
+      });
+
     } else if (accessory.context.type == AccessoryType.TemperatureSensor ) {
       //set Celcius as temperature unit
       accessory.getService(hap.Service.TemperatureSensor)!.updateCharacteristic(hap.Characteristic.TemperatureDisplayUnits, 0);
@@ -252,8 +305,8 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
     this.accessories.push(accessory);
   }
 
-   setupWebSocket(){
-    platform.log.info("Opening a new connection to Domintell '%s' on port %i",ip,port)
+  setupWebSocket(){
+    platform.log.info("Opening a new connection to Domintell '%s' on port %i",ip,port);
 
     connectionTimeout = 0;
     ws = new WebSocket("wss://"+ip+":"+port, {rejectUnauthorized:false});
@@ -267,8 +320,7 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
         ws.send('LOGINPSW@:');
       } else if (message.startsWith("APPINFO")) {
         platform.log.info("APPINFO says: '%s'",message);
-      } else if (message.startsWith("PONG")) {
-        // Reset connection timeout
+      } else if (message.startsWith("INFO:World:INFO")) {
         connectionTimeout = 0;
       } else {
         // Split multi-line messages and iterate through each line
@@ -343,9 +395,6 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
             // Parse Software Vars
           } else if  (splitmsg[i].startsWith("TRV")) {
             // Parse DTRV01 4 shutter inverters
-            //Bit 0 Relay 1 = UP
-            //Bit 1 Relay 1 = DOWN ...
-            //platform.log.info("Received: '%s' (unhandled)", splitmsg[i]);
 
             const uid = splitmsg[i].substr(0,9).toString();
             const value = parseInt(splitmsg[i].substr(10,2), 16);
@@ -388,8 +437,6 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
         existingAccessory = true;
         if (confobject.type == "WindowCovering")
           this.accessories[i].context.movementDuration = confobject.movementDuration;
-
-
       } 
     }
 
@@ -458,39 +505,47 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
           }
         }
         if (this.accessories[i].context.type == AccessoryType.WindowCovering ){
-/*
-          this.log.info("TRV update received to value='%i' currentPostition='%i' positionState='%i' stamp='%i' now='%i' ", value, this.accessories[i].context.currentPosition,this.accessories[i].context.positionState, this.accessories[i].context.startMovementTimeStamp, new Date().getTime())
 
-          if (this.accessories[i].context.positionState == hap.Characteristic.PositionState.INCREASING) {
-            this.log.info("TRV was opening with currentPosition '%i' and will be updated to '%i' (%i ms)", this.accessories[i].context.currentPosition, this.accessories[i].context.currentPosition +  ((new Date().getTime() - this.accessories[i].context.startMovementTimeStamp)/this.accessories[i].context.movementDuration)*100, new Date().getTime() - this.accessories[i].context.startMovementTimeStamp)
-            this.accessories[i].context.currentPosition = this.accessories[i].context.currentPosition +  ((new Date().getTime() - this.accessories[i].context.startMovementTimeStamp)/this.accessories[i].context.movementDuration)*100
-          } else if (this.accessories[i].context.positionState == hap.Characteristic.PositionState.DECREASING) {
-            this.log.info("TRV was closing with currentPosition '%i' and will be updated to '%i' (%i ms)", this.accessories[i].context.currentPosition, this.accessories[i].context.currentPosition -  ((new Date().getTime() - this.accessories[i].context.startMovementTimeStamp)/this.accessories[i].context.movementDuration)*100, new Date().getTime() - this.accessories[i].context.startMovementTimeStamp)
-            this.accessories[i].context.currentPosition = this.accessories[i].context.currentPosition -  ((new Date().getTime() - this.accessories[i].context.startMovementTimeStamp)/this.accessories[i].context.movementDuration)*100
-          } else if (this.accessories[i].context.positionState == hap.Characteristic.PositionState.STOPPED) {
-            this.log.info("TRV was closing with currentPosition='%i' targetPosition='%i'", this.accessories[i].context.currentPosition, this.accessories[i].getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.TargetPosition).getValue())
+          // filter out to handle manual updates only
+          if (isNaN(this.accessories[i].context.setInterval) || this.accessories[i].context.setInterval === null) {
+
+            // if the blinds were already moving on Domintell update message, calculate what the currentPosition will be.
+            switch (this.accessories[i].context.positionState) {
+              case hap.Characteristic.PositionState.DECREASING:
+                this.accessories[i].context.currentPosition -= ((new Date().getTime() - this.accessories[i].context.startMovementTimeStamp)/this.accessories[i].context.movementDuration)*100
+                break;
+              case hap.Characteristic.PositionState.INCREASING:
+                this.accessories[i].context.currentPosition += ((new Date().getTime() - this.accessories[i].context.startMovementTimeStamp)/this.accessories[i].context.movementDuration)*100
+                break;
+              case hap.Characteristic.PositionState.STOPPED:
+                break;
+            }
+
+            this.accessories[i].context.currentPosition = Math.min(this.accessories[i].context.currentPosition,100)
+            this.accessories[i].context.currentPosition = Math.max(this.accessories[i].context.currentPosition,0)
+
+            // Domintell dictates the direction
+            switch (value) {
+              case 0:
+                this.accessories[i].context.positionState = hap.Characteristic.PositionState.STOPPED;
+                this.accessories[i].context.targetPosition = this.accessories[i].context.currentPosition;
+                break;
+              case 1: 
+                this.accessories[i].context.positionState = hap.Characteristic.PositionState.INCREASING;
+                this.accessories[i].context.targetPosition = 100;
+                this.accessories[i].context.startMovementTimeStamp = new Date().getTime();
+                break;
+              case 2: 
+                this.accessories[i].context.positionState = hap.Characteristic.PositionState.DECREASING;
+                this.accessories[i].context.targetPosition = 0;
+                this.accessories[i].context.startMovementTimeStamp = new Date().getTime();
+                break;
+            }
+            //this.log.info("WindowCover manual adjustment CurrentPosition=%i and TargetPosition=%i",this.accessories[i].context.currentPosition, this.accessories[i].context.targetPosition);
+            this.accessories[i].getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.PositionState).updateValue(this.accessories[i].context.positionState);
+            this.accessories[i].getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.TargetPosition).updateValue(this.accessories[i].context.targetPosition);
+            this.accessories[i].getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.CurrentPosition).updateValue(this.accessories[i].context.currentPosition);
           }
-
-
-          this.accessories[i].context.startMovementTimeStamp = new Date().getTime();
-          
-          this.accessories[i].context.currentPosition = Math.min(this.accessories[i].context.currentPosition, 100)
-          this.accessories[i].context.currentPosition = Math.max(this.accessories[i].context.currentPosition, 0)
-*/
-          switch (value) {
-            case 0: 
-              this.accessories[i].context.positionState = hap.Characteristic.PositionState.STOPPED
-              this.accessories[i].getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.TargetPosition).updateValue(this.accessories[i].context.currentPosition)
-              break;
-            case 1: 
-              this.accessories[i].context.positionState = hap.Characteristic.PositionState.INCREASING
-              break;
-            case 2: 
-              this.accessories[i].context.positionState = hap.Characteristic.PositionState.DECREASING
-              break;
-          }
-          this.accessories[i].getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.PositionState).updateValue(this.accessories[i].context.positionState)
-          //this.accessories[i].getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.CurrentPosition).updateValue(this.accessories[i].context.currentPosition)
         }
         if (this.accessories[i].context.type == AccessoryType.Outlet ){
           if (value == 0) {
@@ -518,13 +573,19 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
     }
   }
 
-  removeAccessories() {
-    // we don't have any special identifiers, we just remove all our accessories
+  removeAccessory(accessory: PlatformAccessory) {
+    var accessoryList: PlatformAccessory[] = [accessory];
+    let index = this.accessories.indexOf(accessory,0);
 
-    this.log.info("Removing all accessories");
+    this.log.info("Removing accessory: %s (index: %i)", accessory.displayName, index);
 
-    this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, this.accessories);
-    this.accessories.splice(0, this.accessories.length); // clear out the array
+    this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, accessoryList);
+
+    this.accessories.splice(index,1)
+  }
+
+  requestAppInfo() {
+    ws.send('APPINFO');
   }
 
   createHttpService() {
@@ -533,14 +594,12 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
   }
 
   private handleRequest(request: IncomingMessage, response: ServerResponse) {
-    if (request.url === "/remove") {
-      this.removeAccessories();
+    if (request.url === "/appinfo") {
+      this.requestAppInfo();
     }
 
     response.writeHead(204); // 204 No content
     response.end();
   }
-
-  // ----------------------------------------------------------------------
 
 }
