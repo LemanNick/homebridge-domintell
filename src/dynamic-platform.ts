@@ -36,7 +36,8 @@ enum AccessoryType {
   WindowCovering = 4,
   TemperatureSensor = 5,
   ContactSensor = 6,
-  MotionSensor = 7
+  MotionSensor = 7,
+  ControllableFan = 8
 }
 
 export = (api: API) => {
@@ -278,8 +279,32 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
     } else if (accessory.context.type == AccessoryType.TemperatureSensor ) {
       //set Celcius as temperature unit
       accessory.getService(hap.Service.TemperatureSensor)!.updateCharacteristic(hap.Characteristic.TemperatureDisplayUnits, 0);
-   }
-      
+    } else if (accessory.context.type == AccessoryType.ControllableFan ) {
+
+      accessory.getService(hap.Service.Fan)!.getCharacteristic(hap.Characteristic.RotationSpeed)
+        .on(CharacteristicEventTypes.SET, (value: CharacteristicValue, callback: CharacteristicSetCallback) => {
+          accessory.context.RotationSpeed = value;
+          callback();
+        });
+        accessory.getService(hap.Service.Fan)!.getCharacteristic(hap.Characteristic.On)
+        .on(CharacteristicEventTypes.SET, (value: CharacteristicValue, callback: CharacteristicSetCallback) => {
+          if (value) {
+            if (accessory.context.RotationSpeed == undefined){
+              accessory.context.RotationSpeed = 100
+            }
+            
+            let commandstring = accessory.context.myData + '%D'+accessory.context.RotationSpeed;
+            //this.log.info("%s has received power on request (%s)",accessory.displayName, commandstring);   
+            ws.send(commandstring);
+          } else {
+            let commandstring = accessory.context.myData + '%D0';
+            //this.log.info("%s has received power off request (%s)",accessory.displayName, commandstring);
+            ws.send(commandstring);
+          }
+          callback();
+        });
+
+    }
     this.accessories.push(accessory);
   }
 
@@ -389,6 +414,13 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
               platform.updateAccessory(hap.uuid.generate(uid+"-"+(k+1).toString(16)), value & (2**k));
             }
 
+          } else if  (splitmsg[i].startsWith("D10")) {
+            // Parse DOUT10V02
+            const uid = splitmsg[i].substr(0,9).toString();
+            const value = parseInt(splitmsg[i].substr(10,2), 16);
+
+            platform.updateAccessory(hap.uuid.generate(uid+'-1'), value);
+
           } else if  (splitmsg[i].startsWith("VAR")) {
             // Parse Software Vars
           } else if  (splitmsg[i].startsWith("TRV")) {
@@ -470,6 +502,10 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
       if (confobject.type == "MotionSensor"){
         accessory.context.type = AccessoryType.MotionSensor;
         accessory.addService(hap.Service.MotionSensor, confobject.name);
+      }
+      if (confobject.type == "ControllableFan"){
+        accessory.context.type = AccessoryType.ControllableFan;
+        accessory.addService(hap.Service.Fan, confobject.name);
       }
 
       accessory.context.myData = confobject.identifier;
@@ -566,6 +602,15 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
             this.accessories[i].getService(hap.Service.ContactSensor)!.updateCharacteristic(hap.Characteristic.ContactSensorState, false)
           else
             this.accessories[i].getService(hap.Service.ContactSensor)!.updateCharacteristic(hap.Characteristic.ContactSensorState, true)
+        }
+        if (this.accessories[i].context.type == AccessoryType.ControllableFan) {
+          this.accessories[i].getService(hap.Service.Fan)!.updateCharacteristic(hap.Characteristic.RotationSpeed, value);
+          if (value == 0) {
+            this.accessories[i].getService(hap.Service.Fan)!.updateCharacteristic(hap.Characteristic.On, false);
+          } else {
+            this.accessories[i].getService(hap.Service.Fan)!.updateCharacteristic(hap.Characteristic.On, true);
+          }
+
         }
       }
     }
