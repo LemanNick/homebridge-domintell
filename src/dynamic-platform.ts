@@ -14,9 +14,7 @@ import {
   PlatformConfig,
 } from "homebridge";
 import WebSocket from 'ws';
-import { setServers } from "dns";
-import { callbackify } from "util";
-import { access } from "fs";
+import sha512 from 'crypto';
 
 const PLUGIN_NAME = "homebridge-plugin-domintell";
 const PLATFORM_NAME = "HomebridgeDomintell";
@@ -26,8 +24,11 @@ let Accessory: typeof PlatformAccessory;
 let ws: WebSocket;
 let connectionTimeout = 0;
 let platform: HomebridgeDomintell;
+
 let ip: string;
 let port: number = 17481;
+let username: string = "";
+let password: string = "";
 
 enum AccessoryType {
   Lightbulb = 1,
@@ -51,8 +52,7 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
 
   private readonly log: Logging;
   private readonly api: API;
-  private positionPollInterval: number;
-
+  
   private requestServer?: Server;
 
   private readonly accessories: PlatformAccessory[] = [];
@@ -62,8 +62,6 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
     this.api = api;
     platform = this;
 
-    this.positionPollInterval = 1000;
-
     if (config.ip) {
       ip = config.ip;
     }
@@ -72,7 +70,9 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
       return;
       // TODO: probly stop loading plugin any further as we do not know where to connect to
     }
-    port = config.port || 17481;
+    port = config.port ?? 17481;
+    username = config.username ?? "";
+    password = config.password ?? "";
 
     /*
      * When this event is fired, homebridge restored all cached accessories from disk and did call their respective
@@ -316,13 +316,39 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
     
     ws.on('message', function incoming(message: String){
       // We received a message from Domintell, parse it here
-      if (message.startsWith("INFO:Waiting for LOGINPSW:")) {
-        // Send PWD info or login
-        platform.log.info("Sending login info to Domintell")
-        // TODO: no support yet for password protected configurations
+      if (message.startsWith("INFO:Waiting for LOGINPSW:INFO")) {
+        // First generation of login mechanism. No username/password handling needed.
+        platform.log.info("Opening session to Domintell")
         ws.send('LOGINPSW@:');
+      } else if (message.startsWith("INFO:Waiting for LOGINPSW:NONCE=")) {
+        // Send PWD info or login
+        if (username.length > 0) {
+          platform.log.info("Requesting salt for %s", username);
+          ws.send('REQUESTSALT@'+username);
+        } else {
+          platform.log.info("Sending login info to Domintell")
+          ws.send('LOGINPSW@:');
+        }
+      } else if (message.startsWith("INFO:REQUESTSALT:USERNAME")) {
+        platform.log.info("INFO message received: '%s'",message);
+
+        const splitmsg = message.split(":");
+        const nonce = splitmsg[3].split("=")[1];
+        const salt = splitmsg[4].split("=")[1];
+        
+        let crypto = require('crypto');
+        // platform.log.info("SHA512('azerty1007182019')=%s", crypto.createHash('sha512','azerty1007182019').digest('hex'));
+        // platform.log.info("SHA512('azerty1007182019')=%s", sha512.createHash('sha512').update('azerty1007182019').digest('hex'));
+        
+        const cryptedpasswd = sha512.createHash('sha512').update(nonce+sha512.createHash('sha512').update(password + salt).digest('hex')).digest('hex');
+
+        platform.log.info("login info: username='%s', cryptedpasswd='%s', nonce='%s', salt='%s'",username, cryptedpasswd, nonce, salt)
+
+        // send username and password to Domintell
+        ws.send('LOGINPSW@'+username+':'+cryptedpasswd);
+
       } else if (message.startsWith("APPINFO")) {
-        platform.log.info("APPINFO says: '%s'",message);
+        platform.log.info("APPINFO message received: '%s'",message);
       } else if (message.startsWith("INFO:World:INFO")) {
         connectionTimeout = 0;
       } else {
