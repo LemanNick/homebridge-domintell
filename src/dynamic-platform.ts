@@ -11,10 +11,11 @@ import {
   Logging,
   PlatformAccessory,
   PlatformAccessoryEvent,
-  PlatformConfig,
+  PlatformConfig
 } from "homebridge";
 import WebSocket from 'ws';
 import sha512 from 'crypto';
+import { access } from "fs";
 
 const PLUGIN_NAME = "homebridge-plugin-domintell";
 const PLATFORM_NAME = "HomebridgeDomintell";
@@ -29,17 +30,6 @@ let ip: string;
 let port: number = 17481;
 let username: string = "";
 let password: string = "";
-
-enum AccessoryType {
-  Lightbulb = 1,
-  DimmableLightbulb = 2,
-  Outlet = 3,
-  WindowCovering = 4,
-  TemperatureSensor = 5,
-  ContactSensor = 6,
-  MotionSensor = 7,
-  ControllableFan = 8
-}
 
 export = (api: API) => {
   hap = api.hap;
@@ -90,6 +80,7 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
         }
       }
 
+      let accessoriesToRemove: PlatformAccessory[] = [];
       /*
        * Iterate over configured accessories and remove them if they are not mentioned or configured in the config file
        */
@@ -100,8 +91,9 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
           accessoryFound=true;
         }
         if (accessoryFound == false)
-          this.removeAccessory(i)
+          accessoriesToRemove.push(i)
       }
+      this.removeAccessory(accessoriesToRemove);
       
       // The idea of this plugin is that we open a http service which exposes api calls to add or remove accessories
       this.createHttpService();
@@ -132,7 +124,7 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
       this.log("%s identified!", accessory.displayName);
     });
 
-    if (accessory.context.type == AccessoryType.DimmableLightbulb) {
+    if (accessory.context.type == "DimmableLightbulb") {
       accessory.getService(hap.Service.Lightbulb)!.getCharacteristic(hap.Characteristic.Brightness)
         .on(CharacteristicEventTypes.SET, (value: CharacteristicValue, callback: CharacteristicSetCallback) => {
           accessory.context.brightness = value;
@@ -145,45 +137,45 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
               accessory.context.brightness = 100
             }
             
-            let commandstring = accessory.context.myData + '%D'+accessory.context.brightness;
+            let commandstring = accessory.context.identifier + '%D'+accessory.context.brightness;
             //this.log.info("%s has received power on request (%s)",accessory.displayName, commandstring);   
             ws.send(commandstring);
           } else {
-            let commandstring = accessory.context.myData + '%D0';
+            let commandstring = accessory.context.identifier + '%D0';
             //this.log.info("%s has received power off request (%s)",accessory.displayName, commandstring);
             ws.send(commandstring);
           }
           callback();
         });
-    } else if (accessory.context.type == AccessoryType.Lightbulb ) {
+    } else if (accessory.context.type == "Lightbulb" ) {
       accessory.getService(hap.Service.Lightbulb)!.getCharacteristic(hap.Characteristic.On)
       .on(CharacteristicEventTypes.SET, (value: CharacteristicValue, callback: CharacteristicSetCallback) => {
         if (value) {
-          let commandstring = accessory.context.myData + '%I';
+          let commandstring = accessory.context.identifier + '%I';
           //this.log.info("%s has received power on request (%s)",accessory.displayName, commandstring);   
           ws.send(commandstring);
         } else {
-          let commandstring = accessory.context.myData + '%O';
+          let commandstring = accessory.context.identifier + '%O';
           //this.log.info("%s has received power off request (%s)",accessory.displayName, commandstring);
           ws.send(commandstring);
         }
         callback();
       });
-    } else if (accessory.context.type == AccessoryType.Outlet ) {
+    } else if (accessory.context.type == "Outlet" ) {
       accessory.getService(hap.Service.Outlet)!.getCharacteristic(hap.Characteristic.On)
       .on(CharacteristicEventTypes.SET, (value: CharacteristicValue, callback: CharacteristicSetCallback) => {
         if (value) {
-          let commandstring = accessory.context.myData + '%I';
+          let commandstring = accessory.context.identifier + '%I';
           //this.log.info("%s has received power on request (%s)",accessory.displayName, commandstring);   
           ws.send(commandstring);
         } else {
-          let commandstring = accessory.context.myData + '%O';
+          let commandstring = accessory.context.identifier + '%O';
           //this.log.info("%s has received power off request (%s)",accessory.displayName, commandstring);
           ws.send(commandstring);
         }
         callback();
       });
-    } else if (accessory.context.type == AccessoryType.WindowCovering ) {
+    } else if (accessory.context.type == "WindowCovering" ) {
       accessory.getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.CurrentPosition)
       .on(CharacteristicEventTypes.GET, (callback: CharacteristicGetCallback) => {
         if (accessory.context.currentPosition == undefined) {
@@ -241,11 +233,11 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
         if (accessory.context.currentPosition > value) {
           //this.log.info("WindowCovering SetTargetPosition: '%i' moving down for %i milliseconds",value, accessory.context.movementDuration/100*targetDuration);
           accessory.context.positionState = hap.Characteristic.PositionState.DECREASING;
-          ws.send(accessory.context.myData + '%L');
+          ws.send(accessory.context.identifier + '%L');
         } else if (accessory.context.currentPosition < value) {
           //this.log.info("WindowCovering SetTargetPosition: '%i' moving up for %i milliseconds",value, accessory.context.movementDuration/100*targetDuration);
           accessory.context.positionState = hap.Characteristic.PositionState.INCREASING;
-          ws.send(accessory.context.myData + '%H');
+          ws.send(accessory.context.identifier + '%H');
         } else {
           accessory.context.positionState = hap.Characteristic.PositionState.STOPPED;
         }
@@ -257,7 +249,7 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
           accessory.context.positionState = hap.Characteristic.PositionState.STOPPED;
           accessory.getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.PositionState).updateValue(accessory.context.positionState);
           
-          ws.send(accessory.context.myData + '%O');
+          ws.send(accessory.context.identifier + '%O');
 
           accessory.context.setInterval = null;
 
@@ -276,10 +268,7 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
         return callback(null,accessory.context.targetPosition);
       });
 
-    } else if (accessory.context.type == AccessoryType.TemperatureSensor ) {
-      //set Celcius as temperature unit
-      accessory.getService(hap.Service.TemperatureSensor)!.updateCharacteristic(hap.Characteristic.TemperatureDisplayUnits, 0);
-    } else if (accessory.context.type == AccessoryType.ControllableFan ) {
+    } else if (accessory.context.type == "ControllableFan" ) {
 
       accessory.getService(hap.Service.Fan)!.getCharacteristic(hap.Characteristic.RotationSpeed)
         .on(CharacteristicEventTypes.SET, (value: CharacteristicValue, callback: CharacteristicSetCallback) => {
@@ -293,11 +282,11 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
               accessory.context.RotationSpeed = 100
             }
             
-            let commandstring = accessory.context.myData + '%D'+accessory.context.RotationSpeed;
+            let commandstring = accessory.context.identifier + '%D'+accessory.context.RotationSpeed;
             //this.log.info("%s has received power on request (%s)",accessory.displayName, commandstring);   
             ws.send(commandstring);
           } else {
-            let commandstring = accessory.context.myData + '%D0';
+            let commandstring = accessory.context.identifier + '%D0';
             //this.log.info("%s has received power off request (%s)",accessory.displayName, commandstring);
             ws.send(commandstring);
           }
@@ -358,9 +347,9 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
 
           if (splitmsg[i].startsWith("DAL")){
             // Parse DINTDALI01 messages
-            const uid = splitmsg[i].substr(0,12).toString();
-            const value = parseInt( splitmsg[i].substr(13),16);
-
+            const uid = splitmsg[i].substring(0,12);
+            const value = parseInt( splitmsg[i].substring(13),16);
+            
             platform.updateAccessory(hap.uuid.generate(uid), value)
           } else if  (splitmsg[i].startsWith("BIR")) {
             // Parse DBIR01 (8 bipolar relays)
@@ -436,8 +425,8 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
             const value = parseInt(splitmsg[i].substr(14,2) + splitmsg[i].substr(12,2) + splitmsg[i].substr(10,2), 16);
 
             for (var k = 0; k < 20; k++) {
-              //platform.log.info("DISM20 update '%s' to '%i'",uid+"-"+(k+1).toString(16),value & (2**k));
-              platform.updateAccessory(hap.uuid.generate(uid+"-"+(k+1).toString(16)), value & (2**k));
+              //platform.log.info("DISM20 update '%s' to '%i'",uid+"-"+(k+1).toString(16),(value & (2**k)) >> k);
+              platform.updateAccessory(hap.uuid.generate(uid+"-"+(k+1).toString(16)), (value & (2**k)) >> k);
             }
 
           } else if  (splitmsg[i].startsWith("D10")) {
@@ -468,12 +457,9 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
             if (splitmsg[i].length > 0){
               //platform.log.info("Received: '%s' (unhandled)", splitmsg[i]);
             }
-
           }
         }
-
       }
-
     });
 
     ws.on('close', function() {      
@@ -497,74 +483,57 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
     }
 
     if (!existingAccessory) {
-      this.log.info("Adding new accessory with name '%s'", confobject.name);
       const accessory = new Accessory(confobject.name, uuid);
+      accessory.context = confobject;
 
-      if (confobject.type == "Lightbulb"){
-        accessory.context.type = AccessoryType.Lightbulb;
-        accessory.addService(hap.Service.Lightbulb, confobject.name);
+      switch(accessory.context.type) {
+        case "Lightbulb":
+          accessory.addService(hap.Service.Lightbulb, confobject.name);
+          break;
+        case "DimmableLightbulb":
+          accessory.addService(hap.Service.Lightbulb, confobject.name);
+          break;
+        case "Outlet":
+          accessory.addService(hap.Service.Outlet, confobject.name);
+          break;
+        case "WindowCovering":
+          accessory.addService(hap.Service.WindowCovering, confobject.name);
+          break;
+        case "TemperatureSensor":
+          accessory.addService(hap.Service.TemperatureSensor, confobject.name);
+          break;
+        case "ContactSensor":
+          accessory.addService(hap.Service.ContactSensor, confobject.name);
+          break;
+        case "MotionSensor":
+          accessory.addService(hap.Service.MotionSensor, confobject.name);
+          break;
+        case "ControllableFan":
+          accessory.addService(hap.Service.Fan, confobject.name);
+          break;
       }
-      if (confobject.type == "DimmableLightbulb"){
-        accessory.context.type = AccessoryType.Lightbulb;
-        accessory.addService(hap.Service.Lightbulb, confobject.name);
-      }
-      if (confobject.type == "Outlet"){
-        accessory.context.type = AccessoryType.Outlet;
-        accessory.addService(hap.Service.Outlet, confobject.name);
-      }
-      if (confobject.type == "WindowCovering"){
-        accessory.context.type = AccessoryType.WindowCovering;
-        accessory.context.movementDuration = confobject.movementDuration;
-        accessory.addService(hap.Service.WindowCovering, confobject.name);
-      }
-      if (confobject.type == "TemperatureSensor"){
-        accessory.context.type = AccessoryType.TemperatureSensor;
-        accessory.addService(hap.Service.TemperatureSensor, confobject.name);
-      }
-      if (confobject.type == "ContactSensor"){
-        accessory.context.type = AccessoryType.ContactSensor;
-        accessory.addService(hap.Service.ContactSensor, confobject.name);
-      }
-      if (confobject.type == "MotionSensor"){
-        accessory.context.type = AccessoryType.MotionSensor;
-        accessory.addService(hap.Service.MotionSensor, confobject.name);
-      }
-      if (confobject.type == "ControllableFan"){
-        accessory.context.type = AccessoryType.ControllableFan;
-        accessory.addService(hap.Service.Fan, confobject.name);
-      }
-
-      accessory.context.myData = confobject.identifier;
 
       this.configureAccessory(accessory); // abusing the configureAccessory here
 
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      this.log.info("addAccessory: added new %s accessory with name '%s', identifier='%s'", accessory.context.type, accessory.displayName, accessory.context.identifier)
 
     }
-
   }
 
   /* Received external information about something, update the status in HomeBridge accordingly */
   updateAccessory(uuid: string, value: number) {
     for (var i = 0; i < this.accessories.length; i++) {
-      //this.log.info(this.accessories[i].UUID);
       if (this.accessories[i].UUID === uuid) {
-        if (this.accessories[i].context.type == AccessoryType.Lightbulb ){
-         if (value == 0) {
-            this.accessories[i].getService(hap.Service.Lightbulb)!.updateCharacteristic(hap.Characteristic.On, false);
-          } else {
-            this.accessories[i].getService(hap.Service.Lightbulb)!.updateCharacteristic(hap.Characteristic.On, true);
-          }
+        if (this.accessories[i].context.type == "Lightbulb" ){
+          this.accessories[i].getService(hap.Service.Lightbulb)!.updateCharacteristic(hap.Characteristic.On, (value != 0));
         }
-        if (this.accessories[i].context.type == AccessoryType.DimmableLightbulb ){
+        if (this.accessories[i].context.type == "DimmableLightbulb" ){
+          //this.log.info("updating DimmableLightBulb")
           this.accessories[i].getService(hap.Service.Lightbulb)!.updateCharacteristic(hap.Characteristic.Brightness, value);
-          if (value == 0) {
-            this.accessories[i].getService(hap.Service.Lightbulb)!.updateCharacteristic(hap.Characteristic.On, false);
-          } else {
-            this.accessories[i].getService(hap.Service.Lightbulb)!.updateCharacteristic(hap.Characteristic.On, true);
-          }
+          this.accessories[i].getService(hap.Service.Lightbulb)!.updateCharacteristic(hap.Characteristic.On, (value != 0));
         }
-        if (this.accessories[i].context.type == AccessoryType.WindowCovering ){
+        if (this.accessories[i].context.type == "WindowCovering" ){
 
           // filter out to handle manual updates only
           if (isNaN(this.accessories[i].context.setInterval) || this.accessories[i].context.setInterval === null) {
@@ -607,50 +576,39 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
             this.accessories[i].getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.CurrentPosition).updateValue(this.accessories[i].context.currentPosition);
           }
         }
-        if (this.accessories[i].context.type == AccessoryType.Outlet ){
-          if (value == 0) {
-             this.accessories[i].getService(hap.Service.Outlet)!.updateCharacteristic(hap.Characteristic.On, false);
-          } else {
-             this.accessories[i].getService(hap.Service.Outlet)!.updateCharacteristic(hap.Characteristic.On, true);
-          }
+        if (this.accessories[i].context.type == "Outlet" ){
+          this.accessories[i].getService(hap.Service.Outlet)!.updateCharacteristic(hap.Characteristic.On, (value != 0));
         }
-        if (this.accessories[i].context.type == AccessoryType.TemperatureSensor ){
+        if (this.accessories[i].context.type == "TemperatureSensor" ){
           this.accessories[i].getService(hap.Service.TemperatureSensor)!.updateCharacteristic(hap.Characteristic.CurrentTemperature, value);
         }
-        if (this.accessories[i].context.type == AccessoryType.MotionSensor ){
-          if (value == 0)
-            this.accessories[i].getService(hap.Service.MotionSensor)!.updateCharacteristic(hap.Characteristic.MotionDetected, false)
-          else
-            this.accessories[i].getService(hap.Service.MotionSensor)!.updateCharacteristic(hap.Characteristic.MotionDetected, true)
+        if (this.accessories[i].context.type == "MotionSensor" ){
+          this.accessories[i].getService(hap.Service.MotionSensor)!.updateCharacteristic(hap.Characteristic.MotionDetected, (value != 0))
         }
-        if (this.accessories[i].context.type == AccessoryType.ContactSensor ){
-          if (value == 0)
-            this.accessories[i].getService(hap.Service.ContactSensor)!.updateCharacteristic(hap.Characteristic.ContactSensorState, false)
-          else
-            this.accessories[i].getService(hap.Service.ContactSensor)!.updateCharacteristic(hap.Characteristic.ContactSensorState, true)
+        if (this.accessories[i].context.type == "ContactSensor" ){
+          // Characteristic.ContactSensorState.CONTACT_DETECTED == 0
+          // Characteristic.ContactSensorState.CONTACT_NOT_DETECTED == 1
+          this.accessories[i].getService(hap.Service.ContactSensor)!.updateCharacteristic(hap.Characteristic.ContactSensorState, value)
         }
-        if (this.accessories[i].context.type == AccessoryType.ControllableFan) {
+        if (this.accessories[i].context.type == "ControllableFan") {
           this.accessories[i].getService(hap.Service.Fan)!.updateCharacteristic(hap.Characteristic.RotationSpeed, value);
-          if (value == 0) {
-            this.accessories[i].getService(hap.Service.Fan)!.updateCharacteristic(hap.Characteristic.On, false);
-          } else {
-            this.accessories[i].getService(hap.Service.Fan)!.updateCharacteristic(hap.Characteristic.On, true);
-          }
-
+          this.accessories[i].getService(hap.Service.Fan)!.updateCharacteristic(hap.Characteristic.On, (value != 0));
         }
       }
     }
   }
 
-  removeAccessory(accessory: PlatformAccessory) {
-    var accessoryList: PlatformAccessory[] = [accessory];
-    let index = this.accessories.indexOf(accessory,0);
+  removeAccessory(accessoriesToRemove: PlatformAccessory[]) {
+    //var accessoryList: PlatformAccessory[] = [accessory];
+    for (let i = 0 ; i < accessoriesToRemove.length; i++){
+      let index = this.accessories.indexOf(accessoriesToRemove[i],0);
+      if (index > 0) {
+        this.log.info("Removing accessory: %s", this.accessories[index].displayName);
+        this.accessories.splice(index,1)
+      }
 
-    this.log.info("Removing accessory: %s (index: %i)", accessory.displayName, index);
-
-    this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, accessoryList);
-
-    this.accessories.splice(index,1)
+    }
+    this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, accessoriesToRemove);
   }
 
   requestAppInfo() {
