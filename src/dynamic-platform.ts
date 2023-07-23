@@ -132,19 +132,15 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
         });
         accessory.getService(hap.Service.Lightbulb)!.getCharacteristic(hap.Characteristic.On)
         .on(CharacteristicEventTypes.SET, (value: CharacteristicValue, callback: CharacteristicSetCallback) => {
-          if (value) {
-            if (accessory.context.brightness == undefined){
-              accessory.context.brightness = 100
-            }
-            
-            let commandstring = accessory.context.identifier + '%D'+accessory.context.brightness;
-            //this.log.info("%s has received power on request (%s)",accessory.displayName, commandstring);   
-            ws.send(commandstring);
-          } else {
-            let commandstring = accessory.context.identifier + '%D0';
-            //this.log.info("%s has received power off request (%s)",accessory.displayName, commandstring);
-            ws.send(commandstring);
-          }
+
+          const brightness = accessory.context.brightness !== undefined ? accessory.context.brightness : 100;
+          const commandstring = accessory.context.identifier + (value ? '%D' + brightness : '%D0');
+
+          // Use template strings to include values in the log message, if needed.
+          // this.log.info("%s has received %s request (%s)", accessory.displayName, value ? "power on" : "power off", commandstring);
+
+          ws.send(commandstring);
+
           callback();
         });
     } else if (accessory.context.type == "Lightbulb" ) {
@@ -211,19 +207,23 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
         accessory.context.setInterval = null;
 
         // if we were moving when receiving a new target position, we should calculate what our new current possition was, 
+        const currentTime = new Date().getTime();
+        const elapsedTime = currentTime - accessory.context.startMovementTimeStamp;
+        const movementDuration = accessory.context.movementDuration;
+        const percentageMoved = (elapsedTime / movementDuration) * 100;
+        
         switch (accessory.context.positionState) {
           case hap.Characteristic.PositionState.DECREASING:
-            accessory.context.currentPosition -= ((new Date().getTime() - accessory.context.startMovementTimeStamp)/accessory.context.movementDuration)*100
-            accessory.context.startMovementTimeStamp = new Date().getTime();
+            accessory.context.currentPosition -= percentageMoved;
             break;
           case hap.Characteristic.PositionState.INCREASING:
-            accessory.context.currentPosition += ((new Date().getTime() - accessory.context.startMovementTimeStamp)/accessory.context.movementDuration)*100
-            accessory.context.startMovementTimeStamp = new Date().getTime();
+            accessory.context.currentPosition += percentageMoved;
             break;
           case hap.Characteristic.PositionState.STOPPED:
-            accessory.context.startMovementTimeStamp = new Date().getTime();
+            // Nothing to do here for the STOPPED state.
             break;
         }
+        accessory.context.startMovementTimeStamp = currentTime;        
 
         accessory.context.currentPosition = Math.min(accessory.context.currentPosition,100);
         accessory.context.currentPosition = Math.max(accessory.context.currentPosition,0);
@@ -469,48 +469,34 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
   }
 
   addAccessory(confobject: any) {
-    let existingAccessory = false;
-
     const uuid = hap.uuid.generate(confobject.identifier);
 
-    for (var i = 0; i < this.accessories.length; i++) {
-      if (this.accessories[i].UUID === uuid) {
-        // The requested accessory already exists, skipping
-        existingAccessory = true;
-        if (confobject.type == "WindowCovering")
-          this.accessories[i].context.movementDuration = confobject.movementDuration;
-      } 
+    const existingAccessory = this.accessories.find((accessory) => accessory.UUID === uuid);
+
+    if (existingAccessory) {
+      if (confobject.type === "WindowCovering") {
+        existingAccessory.context.movementDuration = confobject.movementDuration;
+      }
     }
 
     if (!existingAccessory) {
       const accessory = new Accessory(confobject.name, uuid);
       accessory.context = confobject;
 
-      switch(accessory.context.type) {
-        case "Lightbulb":
-          accessory.addService(hap.Service.Lightbulb, confobject.name);
-          break;
-        case "DimmableLightbulb":
-          accessory.addService(hap.Service.Lightbulb, confobject.name);
-          break;
-        case "Outlet":
-          accessory.addService(hap.Service.Outlet, confobject.name);
-          break;
-        case "WindowCovering":
-          accessory.addService(hap.Service.WindowCovering, confobject.name);
-          break;
-        case "TemperatureSensor":
-          accessory.addService(hap.Service.TemperatureSensor, confobject.name);
-          break;
-        case "ContactSensor":
-          accessory.addService(hap.Service.ContactSensor, confobject.name);
-          break;
-        case "MotionSensor":
-          accessory.addService(hap.Service.MotionSensor, confobject.name);
-          break;
-        case "ControllableFan":
-          accessory.addService(hap.Service.Fan, confobject.name);
-          break;
+      const serviceMap: { [key: string]: any } = {
+        Lightbulb: hap.Service.Lightbulb,
+        DimmableLightbulb: hap.Service.Lightbulb,
+        Outlet: hap.Service.Outlet,
+        WindowCovering: hap.Service.WindowCovering,
+        TemperatureSensor: hap.Service.TemperatureSensor,
+        ContactSensor: hap.Service.ContactSensor,
+        MotionSensor: hap.Service.MotionSensor,
+        ControllableFan: hap.Service.Fan,
+      };
+      
+      const serviceType = serviceMap[accessory.context.type];
+      if (serviceType) {
+        accessory.addService(serviceType, confobject.name);
       }
 
       this.configureAccessory(accessory); // abusing the configureAccessory here
@@ -533,49 +519,55 @@ class HomebridgeDomintell implements DynamicPlatformPlugin {
           this.accessories[i].getService(hap.Service.Lightbulb)!.updateCharacteristic(hap.Characteristic.Brightness, value);
           this.accessories[i].getService(hap.Service.Lightbulb)!.updateCharacteristic(hap.Characteristic.On, (value != 0));
         }
-        if (this.accessories[i].context.type == "WindowCovering" ){
-
-          // filter out to handle manual updates only
-          if (isNaN(this.accessories[i].context.setInterval) || this.accessories[i].context.setInterval === null) {
-
-            // if the blinds were already moving on Domintell update message, calculate what the currentPosition will be.
-            switch (this.accessories[i].context.positionState) {
-              case hap.Characteristic.PositionState.DECREASING:
-                this.accessories[i].context.currentPosition -= ((new Date().getTime() - this.accessories[i].context.startMovementTimeStamp)/this.accessories[i].context.movementDuration)*100
-                break;
-              case hap.Characteristic.PositionState.INCREASING:
-                this.accessories[i].context.currentPosition += ((new Date().getTime() - this.accessories[i].context.startMovementTimeStamp)/this.accessories[i].context.movementDuration)*100
-                break;
-              case hap.Characteristic.PositionState.STOPPED:
-                break;
-            }
-
-            this.accessories[i].context.currentPosition = Math.min(this.accessories[i].context.currentPosition,100)
-            this.accessories[i].context.currentPosition = Math.max(this.accessories[i].context.currentPosition,0)
-
-            // Domintell dictates the direction
-            switch (value) {
-              case 0:
-                this.accessories[i].context.positionState = hap.Characteristic.PositionState.STOPPED;
-                this.accessories[i].context.targetPosition = this.accessories[i].context.currentPosition;
-                break;
-              case 1: 
-                this.accessories[i].context.positionState = hap.Characteristic.PositionState.INCREASING;
-                this.accessories[i].context.targetPosition = 100;
-                this.accessories[i].context.startMovementTimeStamp = new Date().getTime();
-                break;
-              case 2: 
-                this.accessories[i].context.positionState = hap.Characteristic.PositionState.DECREASING;
-                this.accessories[i].context.targetPosition = 0;
-                this.accessories[i].context.startMovementTimeStamp = new Date().getTime();
-                break;
-            }
-            //this.log.info("WindowCover manual adjustment CurrentPosition=%i and TargetPosition=%i",this.accessories[i].context.currentPosition, this.accessories[i].context.targetPosition);
-            this.accessories[i].getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.PositionState).updateValue(this.accessories[i].context.positionState);
-            this.accessories[i].getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.TargetPosition).updateValue(this.accessories[i].context.targetPosition);
-            this.accessories[i].getService(hap.Service.WindowCovering)!.getCharacteristic(hap.Characteristic.CurrentPosition).updateValue(this.accessories[i].context.currentPosition);
+        if (this.accessories[i].context.type === "WindowCovering" && (isNaN(this.accessories[i].context.setInterval) || this.accessories[i].context.setInterval === null)) {
+          const accessoryContext = this.accessories[i].context;
+          const currentTime = new Date().getTime();
+          const elapsedTime = currentTime - accessoryContext.startMovementTimeStamp;
+          const movementDuration = accessoryContext.movementDuration;
+          const percentageMoved = (elapsedTime / movementDuration) * 100;
+        
+          // Calculate new currentPosition
+          switch (accessoryContext.positionState) {
+            case hap.Characteristic.PositionState.DECREASING:
+              accessoryContext.currentPosition -= percentageMoved;
+              break;
+            case hap.Characteristic.PositionState.INCREASING:
+              accessoryContext.currentPosition += percentageMoved;
+              break;
+            case hap.Characteristic.PositionState.STOPPED:
+              // Nothing to do here for the STOPPED state.
+              break;
           }
+        
+          // Ensure currentPosition stays within bounds [0, 100]
+          accessoryContext.currentPosition = Math.min(Math.max(accessoryContext.currentPosition, 0), 100);
+        
+          // Domintell dictates the direction
+          switch (value) {
+            case 0:
+              accessoryContext.positionState = hap.Characteristic.PositionState.STOPPED;
+              accessoryContext.targetPosition = accessoryContext.currentPosition;
+              break;
+            case 1:
+              accessoryContext.positionState = hap.Characteristic.PositionState.INCREASING;
+              accessoryContext.targetPosition = 100;
+              accessoryContext.startMovementTimeStamp = currentTime;
+              break;
+            case 2:
+              accessoryContext.positionState = hap.Characteristic.PositionState.DECREASING;
+              accessoryContext.targetPosition = 0;
+              accessoryContext.startMovementTimeStamp = currentTime;
+              break;
+          }
+        
+          const windowCoveringService = this.accessories[i].getService(hap.Service.WindowCovering);
+        
+          // Update characteristics
+          windowCoveringService!.getCharacteristic(hap.Characteristic.PositionState).updateValue(accessoryContext.positionState);
+          windowCoveringService!.getCharacteristic(hap.Characteristic.TargetPosition).updateValue(accessoryContext.targetPosition);
+          windowCoveringService!.getCharacteristic(hap.Characteristic.CurrentPosition).updateValue(accessoryContext.currentPosition);
         }
+        
         if (this.accessories[i].context.type == "Outlet" ){
           this.accessories[i].getService(hap.Service.Outlet)!.updateCharacteristic(hap.Characteristic.On, (value != 0));
         }
