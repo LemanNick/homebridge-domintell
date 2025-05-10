@@ -1,0 +1,112 @@
+{
+  "pluginAlias": "HomebridgeDomintell",
+  "pluginType": "platform",
+  "singular": true,
+  "strictValidation": false,
+  "schema": {
+    "type": "object",
+    "properties": {
+      "ip": {
+        "title": "Domintell master IP Address",
+        "type": "string",
+        "required": true,
+        "format": "ipv4",
+        "default": "192.168.0.1"
+      },
+      "port": {
+        "title": "Domintell port",
+        "type": "integer",
+        "required": true,
+        "default": 17481
+      },
+      "username": {
+        "title": "Domintell Username",
+        "type": "string",
+        "required": false,
+        "default": ""
+      },
+      "password": {
+        "title": "Domintell Password",
+        "type": "string",
+        "required": false,
+        "default": ""
+      },
+      "accessories": {
+        "type": "array",
+        "items": {
+          "title": "Accessories",
+          "type": "object",
+          "properties": {
+            "name":{
+              "type": "string",
+              "required": true
+            },
+            "identifier": {
+              "type": "string",
+              "required": true
+            },
+            "type": {
+              "title": "Accessory type",
+              "type": "string",
+              "default": "Lightbulb",
+              "oneOf": [
+                { "title": "Light Bulb", "enum": ["Lightbulb"]},
+                { "title": "Outlet", "enum": ["Outlet"]},
+                { "title": "Fan", "enum": ["Fan"]},
+                { "title": "Window Covering", "enum": ["WindowCovering"]},
+                { "title": "Temperature Sensor", "enum": ["TemperatureSensor"]},
+                { "title": "Motion Sensor", "enum": ["MotionSensor"]},
+                { "title": "Contact Sensor", "enum": ["ContactSensor"]},
+                { "title": "Switch", "enum": ["Switch"]}
+              ],
+              "required": true
+            },
+            "dimmable": {
+              "title": "Dimmable light bulb",
+              "type": "boolean",
+              "default": false,
+              "condition": {
+                "functionBody": "return model.accessories[arrayIndices].type === 'Lightbulb';"
+              }
+            },
+            "movementDuration": {
+              "title": "Duration of movement",
+              "description": "Define how long it takes before the window covering completes the movement",
+              "type": "integer",
+              "default": 20,
+              "required": true,
+              "condition": {
+                "functionBody": "return model.accessories[arrayIndices].type === 'WindowCovering';"
+              }
+            },
+            "disabled": {
+              "title": "Disable accessory",
+              "type": "boolean",
+              "default": false
+            }
+          }
+        }
+      }
+    }
+  },
+  "layout": [
+    "ip",
+    "port",
+    "username",
+    "password",
+    {
+      "key": "accessories",
+      "type": "array",
+      "orderable": false,
+      "buttonText": "Add Accessory",
+      "items": [
+        "accessories[].name",
+        "accessories[].identifier",
+        "accessories[].type",
+        "accessories[].dimmable",
+        "accessories[].movementDuration",
+        "accessories[].disabled"
+      ]
+    }
+  ]
+}

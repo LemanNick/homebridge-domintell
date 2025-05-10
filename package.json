@@ -1,24 +1,25 @@
 {
   "name": "homebridge-plugin-domintell",
-  "version": "1.0.0",
+  "displayName": "Domintell plugin",
+  "type": "module",
+  "version": "2.0.0",
+  "private": true,
   "description": "Domintell connection to Homebridge",
-  "main": "dist/dynamic-platform.js",
+  "author": "Leman Nick <nick.leman@gmail.com>",
+  "license": "ISC",
+  "main": "dist/index.js",
   "scripts": {
     "clean": "rimraf ./dist",
     "build": "rimraf ./dist && tsc",
+    "lint": "eslint . --max-warnings=0",
     "prepublishOnly": "npm run build",
     "postpublish": "npm run clean",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "watch": "npm run build && npm link && nodemon"
   },
-  "author": "Leman Nick <nick.leman@gmail.com>",
   "engines": {
-    "homebridge": ">=1.0.0"
+    "node": "^18.20.4 || ^20.18.0 || ^22.10.0",
+    "homebridge": "^1.8.0 || ^2.0.0-beta.0"
   },
-  "license": "ISC",
-  "files": [
-    "LICENSE",
-    "dist"
-  ],
   "keywords": [
     "homebridge-plugin"
   ],
@@ -29,12 +30,24 @@
   "bugs": {
     "url": "https://github.com/LemanNick/homebridge-domintell/issues"
   },
+  "dependencies": {
+    "@types/eslint": "^9.6.1",
+    "homebridge-lib": "^7.1.4"
+  },
   "devDependencies": {
-    "@types/node": "^10.17.60",
-    "@types/ws": "^7.4.7",
-    "homebridge": "^1.0.4",
-    "rimraf": "^3.0.2",
-    "typescript": "^3.8.3",
-    "ws": "^7.4.7"
+    "@eslint/js": "^9.21.0",
+    "@types/estree": "^1.0.6",
+    "@types/json-schema": "^7.0.15",
+    "@types/node": "^22.13.5",
+    "@types/ws": "^8.18.0",
+    "@typescript-eslint/parser": "^8.26.0",
+    "eslint": "^9.22.0",
+    "homebridge": "^2.0.0-beta.0",
+    "nodemon": "^3.1.9",
+    "rimraf": "^6.0.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.24.1",
+    "ws": "^8.18.0"
   }
 }
