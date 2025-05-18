@@ -12,7 +12,11 @@ export class WindowCoveringAccessory {
     positionState: 2, // Stopped
     slats: 0, // 0=None, 1=Horizontal, 2=Vertical
     holdPosition: false,
-
+    currentTiltAngle: 0,
+    targetTiltAngle: 0,
+    tiltType: 0, // 0=fixed, 1=horizontal, 2=vertical
+    movementDuration: 0, // seconds for 0-100%
+    tiltDuration: 0, // seconds for -90 to +90 degrees
   };
 
   constructor(
@@ -34,6 +38,9 @@ export class WindowCoveringAccessory {
 
     // set the service name, this is what is displayed as the default name on the Home app
     this.service.setCharacteristic(this.platform.Characteristic.Name, accessory.context.device.name);
+    this.WindowCoveringStates.movementDuration = accessory.context.device.movementDuration; // seconds for 0-100%
+    this.WindowCoveringStates.tiltDuration = accessory.context.device.tiltDuration; // seconds for -90 to +90 degrees
+    this.WindowCoveringStates.tiltType = accessory.context.device.tiltType; // 0=fixed, 1=horizontal, 2=vertical
 
     // register handlers for the On/Off Characteristic
     this.service.getCharacteristic(this.platform.Characteristic.PositionState)
@@ -48,6 +55,20 @@ export class WindowCoveringAccessory {
 
     this.service.getCharacteristic(this.platform.Characteristic.HoldPosition)
       .onSet(this.setHoldPosition.bind(this));        
+
+    if (this.WindowCoveringStates.tiltType === 1) {
+      this.service.getCharacteristic(this.platform.Characteristic.CurrentHorizontalTiltAngle)
+        .onGet(this.getCurrentTiltAngle.bind(this));
+      this.service.getCharacteristic(this.platform.Characteristic.TargetHorizontalTiltAngle)
+        .onSet(this.setTargetTiltAngle.bind(this))
+        .onGet(this.getTargetTiltAngle.bind(this));
+    } else {
+      this.service.getCharacteristic(this.platform.Characteristic.CurrentVerticalTiltAngle)
+        .onGet(this.getCurrentTiltAngle.bind(this));
+      this.service.getCharacteristic(this.platform.Characteristic.TargetVerticalTiltAngle)
+        .onSet(this.setTargetTiltAngle.bind(this))
+        .onGet(this.getTargetTiltAngle.bind(this));
+    }
 
     this.domintellService.registerAccessory(this.accessory.UUID, this);
     
@@ -69,14 +90,10 @@ export class WindowCoveringAccessory {
     }
   }  
   
-  async getTargetPosition(): Promise<CharacteristicValue> {
-    const targetPosition = this.WindowCoveringStates.targetPosition;
-    return targetPosition;
-  }
+  async setTargetTiltAngle(value: CharacteristicValue) {
+    this.WindowCoveringStates.targetTiltAngle = value as number;
 
-  async getPositionState(): Promise<CharacteristicValue> {
-    const positionState = this.WindowCoveringStates.positionState;
-    return positionState;
+    // Start tilt movement loop (timed)
   }
 
   async setHoldPosition(value: CharacteristicValue) {
@@ -98,21 +115,110 @@ export class WindowCoveringAccessory {
     return currentPosition;
   }
 
+  async getTargetPosition(): Promise<CharacteristicValue> {
+    const targetPosition = this.WindowCoveringStates.targetPosition;
+    return targetPosition;
+  }
+
+  async getPositionState(): Promise<CharacteristicValue> {
+    const positionState = this.WindowCoveringStates.positionState;
+    return positionState;
+  }
+
+  async getCurrentTiltAngle(): Promise<CharacteristicValue> {
+    const currentTiltAngle = this.WindowCoveringStates.currentTiltAngle;
+    return currentTiltAngle;
+  }
+  
+  async getTargetTiltAngle(): Promise<CharacteristicValue> {
+    const targetTiltAngle = this.WindowCoveringStates.targetTiltAngle;
+    return targetTiltAngle;
+  }
+
   private async monitorMovementLoop() {
+    
+    let lastUpdate = Date.now();
     while (true) {
-      await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait 1 second
-  
-      if (this.WindowCoveringStates.currentPosition !== this.WindowCoveringStates.targetPosition) {
-        const step = this.WindowCoveringStates.currentPosition < this.WindowCoveringStates.targetPosition ? 1 : -1;
-        this.WindowCoveringStates.currentPosition += step;
-  
-        this.service.updateCharacteristic(this.platform.Characteristic.CurrentPosition, this.WindowCoveringStates.currentPosition);
-  
-        if (this.WindowCoveringStates.currentPosition === this.WindowCoveringStates.targetPosition) {
-          this.WindowCoveringStates.positionState = this.platform.Characteristic.PositionState.STOPPED;
-          this.service.updateCharacteristic(this.platform.Characteristic.PositionState, this.WindowCoveringStates.positionState);
+      await new Promise((resolve) => setTimeout(resolve, 100)); // Check every 100ms for better accuracy
+      const now = Date.now();
+      const elapsed = (now - lastUpdate); // milliseconds
+      lastUpdate = now;
+
+      const movementSpeed = 100 / (this.WindowCoveringStates.movementDuration*1000);
+      const tiltSpeed = 180 / (this.WindowCoveringStates.tiltDuration*1000);
+
+      const prevSate = { ...this.WindowCoveringStates };
+
+      // Determine direction
+      const positionDiff = this.WindowCoveringStates.targetPosition - this.WindowCoveringStates.currentPosition;
+      const direction = positionDiff === 0 ? 0 : (positionDiff > 0 ? 1 : -1);
+
+      if (this.WindowCoveringStates.currentPosition === this.WindowCoveringStates.targetPosition) {
+        this.WindowCoveringStates.positionState = this.platform.Characteristic.PositionState.STOPPED;
+      } else if (this.WindowCoveringStates.currentPosition > this.WindowCoveringStates.targetPosition) {
+        this.WindowCoveringStates.positionState = this.platform.Characteristic.PositionState.DECREASING;
+        if (this.WindowCoveringStates.tiltType > 0) {
+          this.WindowCoveringStates.targetTiltAngle = 90; // Reset tilt angle when moving
+        }
+      } else if (this.WindowCoveringStates.currentPosition < this.WindowCoveringStates.targetPosition) {
+        this.WindowCoveringStates.positionState = this.platform.Characteristic.PositionState.INCREASING;
+        if (this.WindowCoveringStates.tiltType > 0) {
+          this.WindowCoveringStates.targetTiltAngle = -90; // Reset tilt angle when moving
         }
       }
+
+
+      // Link tilt to movement
+      if (this.WindowCoveringStates.currentTiltAngle !== this.WindowCoveringStates.targetTiltAngle) {
+        // Upwards (open): tilt to +90 first, then move
+        // Downwards (close): tilt to -90 first, then move
+        const tiltDirection = this.WindowCoveringStates.currentTiltAngle < this.WindowCoveringStates.targetTiltAngle ? 1 : -1;
+        const tiltDistance = Math.abs(this.WindowCoveringStates.targetTiltAngle - this.WindowCoveringStates.currentTiltAngle);
+        const tiltStep = Math.min(tiltDistance, tiltSpeed * elapsed) * tiltDirection;
+
+        this.WindowCoveringStates.currentTiltAngle += tiltStep;
+
+        // Clamp
+        if ((tiltDirection > 0 && this.WindowCoveringStates.currentTiltAngle > this.WindowCoveringStates.targetTiltAngle) ||
+            (tiltDirection < 0 && this.WindowCoveringStates.currentTiltAngle < this.WindowCoveringStates.targetTiltAngle)) {
+          this.WindowCoveringStates.currentTiltAngle = this.WindowCoveringStates.targetTiltAngle;
+        }
+      }
+
+      // Position movement (only after tilt phase is done)
+      if ((this.WindowCoveringStates.currentPosition !== this.WindowCoveringStates.targetPosition) && 
+          (this.WindowCoveringStates.currentTiltAngle === this.WindowCoveringStates.targetTiltAngle)) {
+        const distance = Math.abs(this.WindowCoveringStates.targetPosition - this.WindowCoveringStates.currentPosition);
+        const step = Math.min(distance, movementSpeed * elapsed) * direction;
+
+        this.WindowCoveringStates.currentPosition += step;
+        // Clamp
+        if ((direction > 0 && this.WindowCoveringStates.currentPosition > this.WindowCoveringStates.targetPosition) ||
+            (direction < 0 && this.WindowCoveringStates.currentPosition < this.WindowCoveringStates.targetPosition)) {
+          this.WindowCoveringStates.currentPosition = this.WindowCoveringStates.targetPosition;
+        }
+        if (this.WindowCoveringStates.currentPosition === this.WindowCoveringStates.targetPosition) {
+          this.WindowCoveringStates.positionState = this.platform.Characteristic.PositionState.STOPPED;
+        }
+      }
+
+      // Update HomeKit with the new state
+      if (prevSate.currentPosition !== this.WindowCoveringStates.currentPosition ||
+          prevSate.currentTiltAngle !== this.WindowCoveringStates.currentTiltAngle ||
+          prevSate.positionState !== this.WindowCoveringStates.positionState) {
+        this.service.updateCharacteristic(this.platform.Characteristic.CurrentPosition, Math.round(this.WindowCoveringStates.currentPosition));
+        this.service.updateCharacteristic(this.platform.Characteristic.PositionState, this.WindowCoveringStates.positionState);
+
+        if (this.WindowCoveringStates.tiltType === 1) {
+          this.service.updateCharacteristic(this.platform.Characteristic.CurrentHorizontalTiltAngle, Math.round(this.WindowCoveringStates.currentTiltAngle));
+          this.service.updateCharacteristic(this.platform.Characteristic.TargetHorizontalTiltAngle, Math.round(this.WindowCoveringStates.targetTiltAngle)); 
+        } else {
+          this.service.updateCharacteristic(this.platform.Characteristic.CurrentVerticalTiltAngle, Math.round(this.WindowCoveringStates.currentTiltAngle));
+          this.service.updateCharacteristic(this.platform.Characteristic.TargetVerticalTiltAngle, Math.round(this.WindowCoveringStates.targetTiltAngle)); 
+        }
+      }
+          
+
     }
   }
 
